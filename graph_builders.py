@@ -1,7 +1,7 @@
 import os 
 import json 
 from typing import Dict, List, Optional
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import ToolMessage, AIMessage
 from langchain_core.runnables.base import Runnable
 from langchain.chat_models.base import BaseChatModel 
 from langchain_community.tools import BaseTool
@@ -9,6 +9,16 @@ from langgraph.graph import StateGraph, START, END
 
 from llms import create_default_openai_llm
 from data_definitions import ReasoningState 
+from chains import create_chain_for_judging_the_need_of_reasoning 
+
+import logging 
+logging.basicConfig(level=logging.INFO)
+
+
+# ====
+# Constants 
+# ====
+KEY_CHATBOT_SUBGRAPH = "chatbot_subgraph"
 
 
 # ====
@@ -102,6 +112,81 @@ def create_default_casual_chatbot_graph_builder () -> StateGraph:
         {
             BasicToolNode.name: BasicToolNode.name, 
             END: END 
+        }
+    )
+
+    # return 
+    return graph_builder
+
+
+# ====
+# Rigorous LLM nodes and edges 
+# ====
+class JudgeTheNeedOfRigorousnessNode: 
+    
+    name :str = "judge_the_need_of_rigorousness"
+    message_rigorousness_required = "Rigorousness required"
+    message_no_rigorousness_required = "Just casual chat"
+
+    def __init__ (
+            self, 
+
+            chat_model :Runnable = create_default_openai_llm()
+    ): 
+        self.chat_model = chat_model
+        self.chain_4_judging_the_need_of_reasoning = create_chain_for_judging_the_need_of_reasoning(llm=chat_model)
+
+    def __call__ (self, state :ReasoningState) -> ReasoningState: 
+        old_messages = state["messages"]
+        assert(len(old_messages) > 0)
+
+        last_user_message = old_messages[-1]
+        judgement = self.chain_4_judging_the_need_of_reasoning.invoke({"input": last_user_message})
+        assert(type(judgement) is bool)
+
+        logging.info(f"Judgement of the need of rigorousness: {judgement}")
+
+        return {
+            "messages": [
+                (
+                    AIMessage(self.message_rigorousness_required)
+                    if (judgement)
+                    else AIMessage(self.message_no_rigorousness_required)
+                )
+            ]
+        }
+        
+def judge_the_need_of_rigorousness_conditional_edges (
+        state :ReasoningState
+):
+    assert("messages" in state)
+
+    last_ai_message = state["messages"][-1]
+    assert(isinstance(last_ai_message, AIMessage)), f"Expected an AI message but got {last_ai_message}"
+
+    if (last_ai_message.content == JudgeTheNeedOfRigorousnessNode.message_rigorousness_required): 
+        return END 
+    else: 
+        return KEY_CHATBOT_SUBGRAPH
+
+
+# ====
+# Rigorous LLM graph 
+# ====
+def create_rigorous_llm_graph (chatbot_subgraph :StateGraph) -> StateGraph: 
+    graph_builder = StateGraph(ReasoningState) 
+
+    graph_builder.add_node(JudgeTheNeedOfRigorousnessNode.name, JudgeTheNeedOfRigorousnessNode())
+    graph_builder.add_node(KEY_CHATBOT_SUBGRAPH, chatbot_subgraph.compile())
+
+    graph_builder.add_edge(START, JudgeTheNeedOfRigorousnessNode.name)
+
+    graph_builder.add_conditional_edges(
+        JudgeTheNeedOfRigorousnessNode.name, 
+        judge_the_need_of_rigorousness_conditional_edges, 
+        {
+            KEY_CHATBOT_SUBGRAPH: KEY_CHATBOT_SUBGRAPH, 
+            END: END
         }
     )
 
