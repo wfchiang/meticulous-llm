@@ -95,7 +95,7 @@ def create_default_casual_chatbot_graph_builder () -> StateGraph:
     llm_tools = [
         TavilySearchResults(max_results=3) 
     ]
-    llm.bind_tools(llm_tools)
+    llm = llm.bind_tools(llm_tools)
 
     # create a graph builder 
     graph_builder = StateGraph(ReasoningState)
@@ -130,7 +130,6 @@ class JudgeTheNeedOfRigorousnessNode:
 
     def __init__ (
             self, 
-
             chat_model :Runnable = create_default_openai_llm()
     ): 
         self.chat_model = chat_model
@@ -155,6 +154,19 @@ class JudgeTheNeedOfRigorousnessNode:
                 )
             ]
         }
+    
+class ExtractFactsNode: 
+
+    name :str = "extract_facts"
+
+    def __init__(
+            self, 
+            chat_model :Runnable = create_default_openai_llm()
+    ):
+        pass
+
+    def __call__(self, state :ReasoningState) -> ReasoningState:
+        return state
         
 def judge_the_need_of_rigorousness_conditional_edges (
         state :ReasoningState
@@ -167,7 +179,7 @@ def judge_the_need_of_rigorousness_conditional_edges (
     if (last_ai_message.content == JudgeTheNeedOfRigorousnessNode.message_rigorousness_required): 
         return END 
     else: 
-        return KEY_CHATBOT_SUBGRAPH
+        return ExtractFactsNode.name
 
 
 # ====
@@ -176,19 +188,23 @@ def judge_the_need_of_rigorousness_conditional_edges (
 def create_rigorous_llm_graph (chatbot_subgraph :StateGraph) -> StateGraph: 
     graph_builder = StateGraph(ReasoningState) 
 
-    graph_builder.add_node(JudgeTheNeedOfRigorousnessNode.name, JudgeTheNeedOfRigorousnessNode())
     graph_builder.add_node(KEY_CHATBOT_SUBGRAPH, chatbot_subgraph.compile())
+    graph_builder.add_node(JudgeTheNeedOfRigorousnessNode.name, JudgeTheNeedOfRigorousnessNode())
+    graph_builder.add_node(ExtractFactsNode.name, ExtractFactsNode())
 
-    graph_builder.add_edge(START, JudgeTheNeedOfRigorousnessNode.name)
+    graph_builder.add_edge(START, KEY_CHATBOT_SUBGRAPH)
+    graph_builder.add_edge(KEY_CHATBOT_SUBGRAPH, JudgeTheNeedOfRigorousnessNode.name)
 
     graph_builder.add_conditional_edges(
         JudgeTheNeedOfRigorousnessNode.name, 
         judge_the_need_of_rigorousness_conditional_edges, 
         {
-            KEY_CHATBOT_SUBGRAPH: KEY_CHATBOT_SUBGRAPH, 
+            ExtractFactsNode.name: ExtractFactsNode.name, 
             END: END
         }
     )
+
+    graph_builder.add_edge(ExtractFactsNode.name, END)
 
     # return 
     return graph_builder
