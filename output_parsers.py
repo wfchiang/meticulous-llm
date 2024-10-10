@@ -1,4 +1,6 @@
-from typing import Optional
+import copy 
+import re 
+from typing import Optional, List 
 from langchain_core.output_parsers import BaseOutputParser
 
 import logging 
@@ -21,12 +23,18 @@ def get_first_sentence (text :str) -> str:
     
     return text[0:min(i_period, i_newline)]
 
+def strip_and_remove_empty_strings_from_list (text_list :List[str]) -> List[str]: 
+    text_list = list(map(lambda t: t.strip(), text_list))
+    text_list = list(filter(lambda t: t!="", text_list))
+    return text_list
+
 
 # ====
 # Output parser classes 
 # ====
 class BooleanOutputParser (BaseOutputParser[bool]): 
-    fallback_value :Optional[bool] = None 
+
+    fallback_value :Optional[bool]= None 
 
     def parse (self, text :str) -> bool:
         try: 
@@ -50,5 +58,64 @@ class BooleanOutputParser (BaseOutputParser[bool]):
                 return self.fallback_value
             else: 
                 raise err 
+            
+    @property  
+    def _type(self) -> str:  
+        return "boolean_output_parser"
 
+class StrListOutputParser (BaseOutputParser[List[str]]): 
 
+    bullet_patterns :List[str] = [
+        r"^(\d+|[\*])([\.:\s]{0,1})"
+    ]
+    separators :List[str] = ["\n"]
+
+    def parse (self, text :str) -> List[str]: 
+        # break text into lines 
+        text_lines = [text]
+        
+        for sep in self.separators: 
+            tmp_text_lines = [] 
+
+            for tline in text_lines: 
+                tmp_text_lines += tline.split(sep)
+            
+            text_lines = tmp_text_lines
+
+        # clean up
+        text_lines = strip_and_remove_empty_strings_from_list(text_lines)
+
+        # group lines by bullet patterns 
+        text_groups = [[]]
+
+        for tline in text_lines: 
+            matched_bullet_header_end_idx = -1 
+            
+            for b_pattern in self.bullet_patterns: 
+                re_match = re.match(b_pattern, tline)
+                if (re_match is not None): 
+                    matched_bullet_header_end_idx = re_match.span()[1]
+                    break 
+            
+            if (matched_bullet_header_end_idx > 0): 
+                text_groups.append([tline[matched_bullet_header_end_idx:].strip()])
+            else:
+                text_groups[-1].append(tline)
+
+        text_groups = list(filter(lambda g: len(g) > 0, text_groups))
+
+        # create the aggregated text list 
+        aggregated_text_list = list(map(
+            lambda tg: " ".join(tg), 
+            text_groups
+        )) 
+
+        # clean up 
+        aggregated_text_list = strip_and_remove_empty_strings_from_list(aggregated_text_list)
+
+        # return 
+        return aggregated_text_list
+
+    @property  
+    def _type(self) -> str:  
+        return "str_list_output_parser"

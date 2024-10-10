@@ -9,7 +9,7 @@ from langgraph.graph import StateGraph, START, END
 
 from llms import create_default_openai_llm
 from data_definitions import ReasoningState 
-from chains import create_chain_for_judging_the_need_of_reasoning 
+from chains import create_chain_for_rigorousness_judgement, create_chain_for_statements_extraction
 
 import logging 
 logging.basicConfig(level=logging.INFO)
@@ -37,7 +37,8 @@ class BasicChatModelNode:
         
         chat_model_said = self.chat_model.invoke(state["messages"])
         return {
-            "messages": [chat_model_said]
+            **state, 
+            "messages": [chat_model_said], 
         }
 
 class BasicToolNode:
@@ -48,8 +49,8 @@ class BasicToolNode:
     def __init__(self, tools: list) -> None:
         self.tools_by_name = {tool.name: tool for tool in tools}
 
-    def __call__(self, inputs: Dict):
-        if messages := inputs.get("messages", []):
+    def __call__(self, state: Dict):
+        if messages := state.get("messages", []):
             message = messages[-1]
         else:
             raise ValueError("No message found in input")
@@ -65,7 +66,10 @@ class BasicToolNode:
                     tool_call_id=tool_call["id"],
                 )
             )
-        return {"messages": outputs}
+        return {
+            **state, 
+            "messages": outputs
+        }
     
 def basic_chat_model_conditional_edges(
     state: ReasoningState
@@ -122,18 +126,15 @@ def create_default_casual_chatbot_graph_builder () -> StateGraph:
 # ====
 # Rigorous LLM nodes and edges 
 # ====
-class JudgeTheNeedOfRigorousnessNode: 
+class RigorousnessJudgementNode: 
     
-    name :str = "judge_the_need_of_rigorousness"
-    message_rigorousness_required = "Rigorousness required"
-    message_no_rigorousness_required = "Just casual chat"
+    name :str = "rigorousness_judgement"
 
     def __init__ (
             self, 
-            chat_model :Runnable = create_default_openai_llm()
+            chat_model :BaseChatModel = create_default_openai_llm()
     ): 
-        self.chat_model = chat_model
-        self.chain_4_judging_the_need_of_reasoning = create_chain_for_judging_the_need_of_reasoning(llm=chat_model)
+        self.chain_4_judging_the_need_of_reasoning = create_chain_for_rigorousness_judgement(llm=chat_model)
 
     def __call__ (self, state :ReasoningState) -> ReasoningState: 
         old_messages = state["messages"]
@@ -146,40 +147,64 @@ class JudgeTheNeedOfRigorousnessNode:
         logging.info(f"Judgement of the need of rigorousness: {judgement}")
 
         return {
-            "messages": [
-                (
-                    AIMessage(self.message_rigorousness_required)
-                    if (judgement)
-                    else AIMessage(self.message_no_rigorousness_required)
-                )
-            ]
+            **state, 
+            "rigorousness_required": judgement
         }
     
-class ExtractFactsNode: 
+class FactsCollectionNode: 
 
-    name :str = "extract_facts"
+    name :str = "facts_collection"
 
     def __init__(
             self, 
-            chat_model :Runnable = create_default_openai_llm()
+            chat_model :BaseChatModel = create_default_openai_llm()
     ):
+        self.chain_4_statements_extraction = create_chain_for_statements_extraction(llm=chat_model)
+
+    def __call__(self, state :ReasoningState) -> ReasoningState:
+        # Extracting facts from tool messages 
+        new_facts = {} 
+        for message in state["messages"]: 
+            if (isinstance(message, ToolMessage) and message.id not in state["facts"]): 
+                logging.info(f"Extracting facts from tool messages: {message.id}")
+                extracted_statements = self.chain_4_statements_extraction.invoke({"input": message.content})
+                new_facts[message.id] = extracted_statements
+        
+        # Return 
+        return {
+            **state, 
+            "facts": {**state["facts"], **new_facts}
+        }
+    
+class ValidateLLMResponse: 
+
+    name :str = "validate_llm_response" 
+
+    def __init__(self) -> None:
         pass
 
     def __call__(self, state :ReasoningState) -> ReasoningState:
         return state
+
+class ReviseLLMResponse: 
+
+    name :str = "revise_llm_response"
+
+    def __init__(self) -> None:
+        pass
+
+    def __call__(self, state :ReasoningState) -> ReasoningState:
+        return state 
         
-def judge_the_need_of_rigorousness_conditional_edges (
+def rigorousness_judgement_conditional_edge (
         state :ReasoningState
 ):
-    assert("messages" in state)
-
-    last_ai_message = state["messages"][-1]
-    assert(isinstance(last_ai_message, AIMessage)), f"Expected an AI message but got {last_ai_message}"
-
-    if (last_ai_message.content == JudgeTheNeedOfRigorousnessNode.message_rigorousness_required): 
-        return END 
+    if (state["rigorousness_required"]): 
+        logging.info("Rigorousness required!")
+        return FactsCollectionNode.name 
     else: 
-        return ExtractFactsNode.name
+        logging.info("Just a casual chatting...")
+        return END
 
 
 # ====
@@ -189,22 +214,26 @@ def create_rigorous_llm_graph (chatbot_subgraph :StateGraph) -> StateGraph:
     graph_builder = StateGraph(ReasoningState) 
 
     graph_builder.add_node(KEY_CHATBOT_SUBGRAPH, chatbot_subgraph.compile())
-    graph_builder.add_node(JudgeTheNeedOfRigorousnessNode.name, JudgeTheNeedOfRigorousnessNode())
-    graph_builder.add_node(ExtractFactsNode.name, ExtractFactsNode())
+    graph_builder.add_node(RigorousnessJudgementNode.name, RigorousnessJudgementNode())
+    graph_builder.add_node(FactsCollectionNode.name, FactsCollectionNode())
+    graph_builder.add_node(ValidateLLMResponse.name, ValidateLLMResponse())
+    graph_builder.add_node(ReviseLLMResponse.name, ReviseLLMResponse())
 
     graph_builder.add_edge(START, KEY_CHATBOT_SUBGRAPH)
-    graph_builder.add_edge(KEY_CHATBOT_SUBGRAPH, JudgeTheNeedOfRigorousnessNode.name)
+    graph_builder.add_edge(KEY_CHATBOT_SUBGRAPH, RigorousnessJudgementNode.name)
 
     graph_builder.add_conditional_edges(
-        JudgeTheNeedOfRigorousnessNode.name, 
-        judge_the_need_of_rigorousness_conditional_edges, 
+        RigorousnessJudgementNode.name, 
+        rigorousness_judgement_conditional_edge, 
         {
-            ExtractFactsNode.name: ExtractFactsNode.name, 
+            FactsCollectionNode.name: FactsCollectionNode.name, 
             END: END
         }
     )
 
-    graph_builder.add_edge(ExtractFactsNode.name, END)
+    graph_builder.add_edge(FactsCollectionNode.name, ValidateLLMResponse.name)
+    graph_builder.add_edge(ValidateLLMResponse.name, ReviseLLMResponse.name)
+    graph_builder.add_edge(ReviseLLMResponse.name, END)
 
     # return 
     return graph_builder

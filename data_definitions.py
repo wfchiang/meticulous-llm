@@ -4,4 +4,8 @@ from langgraph.graph.message import add_messages
 
 
 class ReasoningState (TypedDict):
-    messages: Annotated[list, add_messages]
+    rigorousness_required :Annotated[bool, lambda x,y: y]
+
+    messages :Annotated[list, add_messages]
+
+    facts :Annotated[dict, lambda facts_a, facts_b: {**facts_a, **facts_b}]
