@@ -173,9 +173,9 @@ class FactsCollectionNode:
             "facts": new_facts
         }
     
-class ValidateLLMResponse: 
+class LLMResponseValidationNode: 
 
-    name :str = "validate_llm_response" 
+    name :str = "llm_response_validation" 
 
     def __init__(
             self, 
@@ -234,9 +234,9 @@ class ValidateLLMResponse:
                 "validated_statements": validated_statements
             }
 
-class ReviseLLMResponse: 
+class LLMResponseRevisementNode: 
 
-    name :str = "revise_llm_response"
+    name :str = "llm_response_revisement"
 
     def __init__(
             self, 
@@ -286,8 +286,8 @@ def create_rigorous_llm_graph (chatbot_subgraph :StateGraph) -> StateGraph:
     graph_builder.add_node(KEY_CHATBOT_SUBGRAPH, chatbot_subgraph.compile())
     graph_builder.add_node(RigorousnessJudgementNode.name, RigorousnessJudgementNode())
     graph_builder.add_node(FactsCollectionNode.name, FactsCollectionNode())
-    graph_builder.add_node(ValidateLLMResponse.name, ValidateLLMResponse())
-    graph_builder.add_node(ReviseLLMResponse.name, ReviseLLMResponse())
+    graph_builder.add_node(LLMResponseValidationNode.name, LLMResponseValidationNode())
+    graph_builder.add_node(LLMResponseRevisementNode.name, LLMResponseRevisementNode())
 
     graph_builder.add_edge(START, KEY_CHATBOT_SUBGRAPH)
     graph_builder.add_edge(KEY_CHATBOT_SUBGRAPH, RigorousnessJudgementNode.name)
@@ -301,9 +301,9 @@ def create_rigorous_llm_graph (chatbot_subgraph :StateGraph) -> StateGraph:
         }
     )
 
-    graph_builder.add_edge(FactsCollectionNode.name, ValidateLLMResponse.name)
-    graph_builder.add_edge(ValidateLLMResponse.name, ReviseLLMResponse.name)
-    graph_builder.add_edge(ReviseLLMResponse.name, END)
+    graph_builder.add_edge(FactsCollectionNode.name, LLMResponseValidationNode.name)
+    graph_builder.add_edge(LLMResponseValidationNode.name, LLMResponseRevisementNode.name)
+    graph_builder.add_edge(LLMResponseRevisementNode.name, END)
 
     # return 
     return graph_builder
