@@ -1,15 +1,15 @@
 import os 
 import json 
-from typing import Dict, List, Optional
-from langchain_core.messages import ToolMessage, AIMessage
+from typing import Dict
+from langchain_core.messages import ToolMessage, AIMessage, HumanMessage
 from langchain_core.runnables.base import Runnable
 from langchain.chat_models.base import BaseChatModel 
-from langchain_community.tools import BaseTool
 from langgraph.graph import StateGraph, START, END
 
 from llms import create_default_openai_llm
-from data_definitions import ReasoningState 
-from chains import create_chain_for_rigorousness_judgement, create_chain_for_statements_extraction
+from data_definitions import ReasoningState, collect_facts_from_state
+from chains import create_chain_for_rigorousness_judgement, create_chain_for_statements_extraction, create_chain_for_input_validation_against_facts, create_chain_for_statements_summarization
+from utils import encode_text_list_to_bulleted_paragraph
 
 import logging 
 logging.basicConfig(level=logging.INFO)
@@ -37,7 +37,6 @@ class BasicChatModelNode:
         
         chat_model_said = self.chat_model.invoke(state["messages"])
         return {
-            **state, 
             "messages": [chat_model_said], 
         }
 
@@ -147,7 +146,6 @@ class RigorousnessJudgementNode:
         logging.info(f"Judgement of the need of rigorousness: {judgement}")
 
         return {
-            **state, 
             "rigorousness_required": judgement
         }
     
@@ -172,38 +170,110 @@ class FactsCollectionNode:
         
         # Return 
         return {
-            **state, 
-            "facts": {**state["facts"], **new_facts}
+            "facts": new_facts
         }
     
 class ValidateLLMResponse: 
 
     name :str = "validate_llm_response" 
 
-    def __init__(self) -> None:
-        pass
+    def __init__(
+            self, 
+            chat_model :BaseChatModel = create_default_openai_llm()
+    ) -> None:
+        self.chain_4_statements_extraction = create_chain_for_statements_extraction(llm=chat_model)
+        self.chain_4_text_validation_against_facts = create_chain_for_input_validation_against_facts(llm=chat_model)
 
     def __call__(self, state :ReasoningState) -> ReasoningState:
-        return state
+        all_facts = collect_facts_from_state(state)
+    
+        if (len(all_facts) == 0): 
+            # If there is no fact, then, there is no validated statement 
+            logging.info(f"No fact, no validated statement.")
+
+            # return 
+            return {
+                "validated_statements": [] 
+            } 
+
+        else: 
+            # Find out the last AI message 
+            last_ai_message = None 
+            for i in range(len(state["messages"])-1, -1, -1): 
+                if (isinstance(state["messages"][i], AIMessage) and state["messages"][i].content.strip() != ""): 
+                    last_ai_message = state["messages"][i]
+                    break 
+
+            assert(last_ai_message is not None), "AIMessage not found"
+            
+            # Extract statements from the last AIMessage 
+            extracted_statements = self.chain_4_statements_extraction.invoke({"input": last_ai_message.content})
+
+            logging.info(f"{len(extracted_statements)} statements extracted from the last AI message")
+            
+            # validate the extracted statements 
+            encoded_facts = encode_text_list_to_bulleted_paragraph(
+                text_list=all_facts
+            )
+
+            validated_statements = [] 
+
+            for es in extracted_statements: 
+                judgement = self.chain_4_text_validation_against_facts.invoke({
+                    "input": es, 
+                    "facts": encoded_facts
+                })
+
+                if (judgement): 
+                    validated_statements.append(es)
+
+            logging.info(f"{len(validated_statements)} statements passed the validation")
+
+            # return 
+            return {
+                "validated_statements": validated_statements
+            }
 
 class ReviseLLMResponse: 
 
     name :str = "revise_llm_response"
 
-    def __init__(self) -> None:
-        pass
+    def __init__(
+            self, 
+            chat_model :BaseChatModel = create_default_openai_llm()
+    ) -> None:
+        self.chain_4_statements_summarization = create_chain_for_statements_summarization(llm=chat_model)
 
     def __call__(self, state :ReasoningState) -> ReasoningState:
-        return state 
+        new_messages = [
+            HumanMessage("Please revise rigorously") 
+        ]
+
+        validated_statements = state["validated_statements"]
+        if (len(validated_statements) == 0): 
+            new_messages.append(
+                AIMessage("Sorry, I cannot answer it rigorously...")
+            )
+
+        else: 
+            new_messages.append(
+                AIMessage(self.chain_4_statements_summarization.invoke({
+                    "statements": encode_text_list_to_bulleted_paragraph(text_list=validated_statements)
+                }))
+            )
+
+        return {
+            "messages": new_messages, 
+            "rigorousness_required": False, # reset rigorousness_required flag
+            "validated_statements": [] 
+        } 
         
 def rigorousness_judgement_conditional_edge (
         state :ReasoningState
 ):
     if (state["rigorousness_required"]): 
-        logging.info("Rigorousness required!")
         return FactsCollectionNode.name 
     else: 
-        logging.info("Just a casual chatting...")
         return END
 
 
