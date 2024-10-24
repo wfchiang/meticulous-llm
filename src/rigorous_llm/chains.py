@@ -3,7 +3,7 @@ from langchain_core.runnables.base import Runnable
 from langchain_core.output_parsers import StrOutputParser
 from langchain.chat_models.base import BaseChatModel 
 
-from output_parsers import BooleanOutputParser, StrListOutputParser
+from .output_parsers import BooleanOutputParser, StrListOutputParser
 
 
 def create_chain_for_rigorousness_judgement (llm :BaseChatModel) -> Runnable: 

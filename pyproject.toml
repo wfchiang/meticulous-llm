@@ -1,0 +1,20 @@
+[tool.poetry]
+name = "rigorous-llm"
+version = "0.1.0"
+description = "Rigorous LLM"
+authors = ["wfchiang <weifan.wf@gmail.com>"]
+readme = "README.md"
+packages = [{include = "rigorous_llm", from = "src"}]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+langchain = ">=0.3.0"
+langchain-community = ">=0.3.0"
+langchain-google-genai = ">=2.0.1"
+langchain-huggingface  = ">=0.1.0"
+langchain-openai = ">=0.2.0"
+
+
+[build-system]
+requires = ["poetry-core"]
+build-backend = "poetry.core.masonry.api"

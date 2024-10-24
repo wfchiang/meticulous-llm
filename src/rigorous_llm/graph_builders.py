@@ -6,10 +6,10 @@ from langchain_core.runnables.base import Runnable
 from langchain.chat_models.base import BaseChatModel 
 from langgraph.graph import StateGraph, START, END
 
-from llms import create_default_openai_llm
-from data_definitions import ReasoningState, collect_facts_from_state
-from chains import create_chain_for_rigorousness_judgement, create_chain_for_statements_extraction, create_chain_for_input_validation_against_facts, create_chain_for_statements_summarization
-from utils import encode_text_list_to_bulleted_paragraph
+from .llms import create_default_openai_llm
+from .data_definitions import ReasoningState, collect_facts_from_state
+from .chains import create_chain_for_rigorousness_judgement, create_chain_for_statements_extraction, create_chain_for_input_validation_against_facts, create_chain_for_statements_summarization
+from .utils import encode_text_list_to_bulleted_paragraph
 
 import logging 
 logging.basicConfig(level=logging.INFO)
