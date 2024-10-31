@@ -163,3 +163,4 @@ cython_debug/
 
 # Rigorous LLM specific 
 .env
+poetry.lock

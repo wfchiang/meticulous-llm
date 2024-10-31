@@ -17,13 +17,15 @@ The current method is illustrated by the following figure.
     - This is to judge if the user query requires "rigorousness". For example, user request like "tell me a story" does not require rigorousness. On the other hand, "What is Google LLC?" does. 
     - If the stage does not consider the rigorousness is required by the query, the workflow will just get to the "END" -- just returns **chatbot_subgraph** response. 
 
-* **facts_collection**: This will collect "facts" in different ways. The current implementation is just extracting facts from the tool usages. It will be revised in the later versions. 
+* **sub_tasks_launcher**: It launches two sub-tasks running in parallel: **fact_collection** and **llm_response_statements_extraction**. 
 
-* **llm_response_validation**: This will validate the LLM response (the output of **chatbot_subgraph**) by the following steps: 
-    - Decompose the LLM response into statements. 
-    - Validate each statement against the facts collected in **facts_collection**.
+* **facts_collection**: This will collect "facts" in different ways. The current implementation is just extracting facts from the tool usages. It will be revised in the later versions.
 
-* **llm_response_revisement**: This will re-compose the LLM response with the statements that pass the validation in **llm_response_validation** stage. 
+* **llm_response_statements_extraction**: It will decompose the former generated LLM response (the output of **chatbot_subgraph**) into "statements". Each of the statement holds a piece of information in the response. 
+
+* **llm_response_validation**: It will join the outputs of stages, **facts_collection** and **llm_response_statements_extraction**, and validate the extracted statements agaist the facts. 
+
+* **llm_response_revisement**: For the statements pass the validation of **llm_response_validation**, they will be re-composed into a revised message. 
 
 ## Demo 
 

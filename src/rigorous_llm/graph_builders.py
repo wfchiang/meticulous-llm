@@ -6,10 +6,10 @@ from langchain_core.runnables.base import Runnable
 from langchain.chat_models.base import BaseChatModel 
 from langgraph.graph import StateGraph, START, END
 
-from llms import create_default_openai_llm
-from data_definitions import ReasoningState, collect_facts_from_state
-from chains import create_chain_for_rigorousness_judgement, create_chain_for_statements_extraction, create_chain_for_input_validation_against_facts, create_chain_for_statements_summarization
-from utils import encode_text_list_to_bulleted_paragraph
+from .llms import create_default_openai_llm
+from .data_definitions import ReasoningState, collect_facts_from_state
+from .chains import create_chain_for_rigorousness_judgement, create_chain_for_statements_extraction, create_chain_for_input_validation_against_facts, create_chain_for_statements_summarization
+from .utils import encode_text_list_to_bulleted_paragraph, find_last_chat_message
 
 import logging 
 logging.basicConfig(level=logging.INFO)
@@ -149,6 +149,25 @@ class RigorousnessJudgementNode:
             "rigorousness_required": judgement
         }
     
+def rigorousness_judgement_conditional_edge (
+        state :ReasoningState
+):
+    if (state["rigorousness_required"]): 
+        return SubTasksLauncher.name 
+    else: 
+        return END
+    
+class SubTasksLauncher: 
+
+    name :str = "sub_tasks_launcher"
+
+    def __call__(self, state :ReasoningState) -> ReasoningState: 
+        return {
+            "facts_collected": False, 
+            "statements_extracted": False, 
+            "extracted_statements": [] 
+        }
+    
 class FactsCollectionNode: 
 
     name :str = "facts_collection"
@@ -168,9 +187,35 @@ class FactsCollectionNode:
                 extracted_statements = self.chain_4_statements_extraction.invoke({"input": message.content})
                 new_facts[message.id] = extracted_statements
         
+        logging.info(f"{len(new_facts.values())} new facts extracted")
         # Return 
         return {
             "facts": new_facts
+        }
+    
+class LLMResponseStatementsExtractionNode: 
+    
+    name :str = "llm_response_statements_extraction"
+
+    def __init__ (
+            self, 
+            chat_model :BaseChatModel = create_default_openai_llm()
+    ) -> None: 
+        self.chain_4_statements_extraction = create_chain_for_statements_extraction(llm=chat_model)
+
+    def __call__(self, state :ReasoningState) -> ReasoningState:
+        # Find out the last AI message 
+        last_ai_message = find_last_chat_message(state["messages"], message_type=AIMessage)
+        assert(last_ai_message is not None), "AIMessage not found"
+        
+        # Extract statements from the last AIMessage 
+        extracted_statements = self.chain_4_statements_extraction.invoke({"input": last_ai_message.content})
+
+        logging.info(f"{len(extracted_statements)} statements extracted from the last AI message")
+
+        # Return 
+        return {
+            "extracted_statements": extracted_statements 
         }
     
 class LLMResponseValidationNode: 
@@ -181,7 +226,6 @@ class LLMResponseValidationNode:
             self, 
             chat_model :BaseChatModel = create_default_openai_llm()
     ) -> None:
-        self.chain_4_statements_extraction = create_chain_for_statements_extraction(llm=chat_model)
         self.chain_4_text_validation_against_facts = create_chain_for_input_validation_against_facts(llm=chat_model)
 
     def __call__(self, state :ReasoningState) -> ReasoningState:
@@ -198,23 +242,18 @@ class LLMResponseValidationNode:
 
         else: 
             # Find out the last AI message 
-            last_ai_message = None 
-            for i in range(len(state["messages"])-1, -1, -1): 
-                if (isinstance(state["messages"][i], AIMessage) and state["messages"][i].content.strip() != ""): 
-                    last_ai_message = state["messages"][i]
-                    break 
-
+            last_ai_message = find_last_chat_message(state["messages"], message_type=AIMessage)
             assert(last_ai_message is not None), "AIMessage not found"
             
-            # Extract statements from the last AIMessage 
-            extracted_statements = self.chain_4_statements_extraction.invoke({"input": last_ai_message.content})
-
-            logging.info(f"{len(extracted_statements)} statements extracted from the last AI message")
+            # Get the extracted statements from the state 
+            extracted_statements = state["extracted_statements"] 
             
             # validate the extracted statements 
             encoded_facts = encode_text_list_to_bulleted_paragraph(
                 text_list=all_facts
             )
+
+            logging.info(f"Validating {len(extracted_statements)} extracted statements against {len(all_facts)} facts")
 
             validated_statements = [] 
 
@@ -267,14 +306,6 @@ class LLMResponseRevisementNode:
             "rigorousness_required": False, # reset rigorousness_required flag
             "validated_statements": [] 
         } 
-        
-def rigorousness_judgement_conditional_edge (
-        state :ReasoningState
-):
-    if (state["rigorousness_required"]): 
-        return FactsCollectionNode.name 
-    else: 
-        return END
 
 
 # ====
@@ -283,26 +314,43 @@ def rigorousness_judgement_conditional_edge (
 def create_rigorous_llm_graph (chatbot_subgraph :StateGraph) -> StateGraph: 
     graph_builder = StateGraph(ReasoningState) 
 
+    # Start node and its out-going edges 
     graph_builder.add_node(KEY_CHATBOT_SUBGRAPH, chatbot_subgraph.compile())
-    graph_builder.add_node(RigorousnessJudgementNode.name, RigorousnessJudgementNode())
-    graph_builder.add_node(FactsCollectionNode.name, FactsCollectionNode())
-    graph_builder.add_node(LLMResponseValidationNode.name, LLMResponseValidationNode())
-    graph_builder.add_node(LLMResponseRevisementNode.name, LLMResponseRevisementNode())
-
     graph_builder.add_edge(START, KEY_CHATBOT_SUBGRAPH)
+
+    # LLM subgraph and its out-going edges 
     graph_builder.add_edge(KEY_CHATBOT_SUBGRAPH, RigorousnessJudgementNode.name)
 
+    # Rigorousness judgement node and its out-going edges 
+    graph_builder.add_node(RigorousnessJudgementNode.name, RigorousnessJudgementNode())
     graph_builder.add_conditional_edges(
         RigorousnessJudgementNode.name, 
         rigorousness_judgement_conditional_edge, 
         {
-            FactsCollectionNode.name: FactsCollectionNode.name, 
+            SubTasksLauncher.name: SubTasksLauncher.name, 
             END: END
         }
     )
 
+    # Sub-tasks launcher node and its out-going edges 
+    graph_builder.add_node(SubTasksLauncher.name, SubTasksLauncher())
+    graph_builder.add_edge(SubTasksLauncher.name, FactsCollectionNode.name)
+    graph_builder.add_edge(SubTasksLauncher.name, LLMResponseStatementsExtractionNode.name)
+
+    # Fact collection node and its out-going edges 
+    graph_builder.add_node(FactsCollectionNode.name, FactsCollectionNode())
     graph_builder.add_edge(FactsCollectionNode.name, LLMResponseValidationNode.name)
+
+    # LLM response statements extraction node and its out-going edges 
+    graph_builder.add_node(LLMResponseStatementsExtractionNode.name, LLMResponseStatementsExtractionNode())
+    graph_builder.add_edge(LLMResponseStatementsExtractionNode.name, LLMResponseValidationNode.name)
+
+    # LLM response validation node and its out-going edges 
+    graph_builder.add_node(LLMResponseValidationNode.name, LLMResponseValidationNode())
     graph_builder.add_edge(LLMResponseValidationNode.name, LLMResponseRevisementNode.name)
+
+    # LLM response revisement node and its out-going edges 
+    graph_builder.add_node(LLMResponseRevisementNode.name, LLMResponseRevisementNode())
     graph_builder.add_edge(LLMResponseRevisementNode.name, END)
 
     # return 
